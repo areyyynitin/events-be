@@ -6,9 +6,6 @@ import { User } from "../models/Event";
 
 const router = Router();
 
-/**
- * POST /api/auth/signup
- */
 router.post("/signup", async (req, res) => {
     const parsed = signupSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json(parsed.error);
@@ -40,9 +37,6 @@ router.post("/signup", async (req, res) => {
     }
 });
 
-/**
- * POST /api/auth/signin
- */
 router.post("/signin", async (req, res) => {
     const parsed = signinSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json(parsed.error);

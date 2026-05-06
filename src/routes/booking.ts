@@ -38,9 +38,6 @@ const releaseExpiredReservations = async (eventId: string, session?: mongoose.Cl
     await deleteQuery;
 };
 
-/**
- * POST /api/reserve
- */
 router.post("/reserve", authMiddleware, async (req: AuthRequest, res) => {
     const parsed = reserveSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json(parsed.error);
@@ -100,9 +97,6 @@ router.post("/reserve", authMiddleware, async (req: AuthRequest, res) => {
     }
 });
 
-/**
- * POST /api/bookings
- */
 router.post("/bookings", authMiddleware, async (req: AuthRequest, res) => {
     const parsed = bookingSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json(parsed.error);

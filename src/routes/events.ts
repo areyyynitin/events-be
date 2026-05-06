@@ -48,13 +48,11 @@ const ensureSeatsExist = async (eventId: string, totalSeats: number) => {
     }
 };
 
-// GET all events
 router.get("/", async (_, res) => {
     const events = await Event.find();
     res.json(events);
 });
 
-// GET single event
 router.get("/:id", async (req, res) => {
     const event = await Event.findById(req.params.id);
     if (!event) return res.status(404).json({ message: "Not found" });
