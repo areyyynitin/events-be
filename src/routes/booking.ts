@@ -38,38 +38,6 @@ const releaseExpiredReservations = async (eventId: string, session?: mongoose.Cl
     await deleteQuery;
 };
 
-const releaseUserReservations = async (
-    eventId: string,
-    userId: string,
-    session?: mongoose.ClientSession
-) => {
-    const userReservationsQuery = Reservation.find({ eventId, userId });
-    if (session) userReservationsQuery.session(session);
-    const userReservations = await userReservationsQuery;
-
-    if (userReservations.length === 0) return;
-
-    const reservedSeats = [...new Set(userReservations.flatMap((reservation) => reservation.seatNumbers))];
-    if (reservedSeats.length > 0) {
-        const seatUpdate = Seat.updateMany(
-            {
-                eventId,
-                seatNumber: { $in: reservedSeats },
-                status: "reserved",
-            },
-            { $set: { status: "available", reservedUntil: null } }
-        );
-        if (session) seatUpdate.session(session);
-        await seatUpdate;
-    }
-
-    const deleteQuery = Reservation.deleteMany({
-        _id: { $in: userReservations.map((reservation) => reservation._id) },
-    });
-    if (session) deleteQuery.session(session);
-    await deleteQuery;
-};
-
 router.post("/reserve", authMiddleware, async (req: AuthRequest, res) => {
     const parsed = reserveSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json(parsed.error);
@@ -82,24 +50,34 @@ router.post("/reserve", authMiddleware, async (req: AuthRequest, res) => {
 
     try {
         await releaseExpiredReservations(eventId, session);
-        // Keep only one active reservation state per user/event.
-        // If user reserves again after refresh, old blocked seats are released first.
-        await releaseUserReservations(eventId, userId, session);
-
-        const seats = await Seat.find({
+        const existingReservations = await Reservation.find({
             eventId,
-            seatNumber: { $in: seatNumbers },
-            status: "available",
+            userId,
         }).session(session);
+        const existingSeatNumbers = [
+            ...new Set(existingReservations.flatMap((reservation) => reservation.seatNumbers)),
+        ];
+        const seatNumbersToReserve = [...new Set([...existingSeatNumbers, ...seatNumbers])];
+        const freshSeatNumbers = seatNumbersToReserve.filter(
+            (seatNumber) => !existingSeatNumbers.includes(seatNumber)
+        );
 
-        if (seats.length !== seatNumbers.length) {
-            throw new Error("Some seats not available");
+        if (freshSeatNumbers.length > 0) {
+            const seats = await Seat.find({
+                eventId,
+                seatNumber: { $in: freshSeatNumbers },
+                status: "available",
+            }).session(session);
+
+            if (seats.length !== freshSeatNumbers.length) {
+                throw new Error("Some seats not available");
+            }
         }
 
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
         await Seat.updateMany(
-            { eventId, seatNumber: { $in: seatNumbers } },
+            { eventId, seatNumber: { $in: seatNumbersToReserve } },
             {
                 $set: {
                     status: "reserved",
@@ -109,12 +87,18 @@ router.post("/reserve", authMiddleware, async (req: AuthRequest, res) => {
             { session }
         );
 
+        if (existingReservations.length > 0) {
+            await Reservation.deleteMany({
+                _id: { $in: existingReservations.map((reservation) => reservation._id) },
+            }).session(session);
+        }
+
         const reservation = await Reservation.create(
             [
                 {
                     userId,
                     eventId,
-                    seatNumbers,
+                    seatNumbers: seatNumbersToReserve,
                     expiresAt,
                 },
             ],
@@ -129,6 +113,43 @@ router.post("/reserve", authMiddleware, async (req: AuthRequest, res) => {
         res.status(400).json({ message });
     } finally {
         session.endSession();
+    }
+});
+
+router.get("/reservations/:eventId/me", authMiddleware, async (req: AuthRequest, res) => {
+    const eventIdParam = req.params.eventId;
+    const userId = req.userId!;
+
+    if (typeof eventIdParam !== "string" || eventIdParam.trim().length === 0) {
+        return res.status(400).json({ message: "Invalid event id." });
+    }
+    const eventId = eventIdParam;
+
+    try {
+        await releaseExpiredReservations(eventId);
+        const reservations = await Reservation.find({ eventId, userId });
+        if (reservations.length === 0) {
+            return res.json({ seatNumbers: [], expiresAt: null });
+        }
+
+        const now = new Date();
+        const activeReservations = reservations.filter(
+            (reservation) => reservation.expiresAt && reservation.expiresAt >= now
+        );
+        if (activeReservations.length === 0) {
+            return res.json({ seatNumbers: [], expiresAt: null });
+        }
+
+        const seatNumbers = [...new Set(activeReservations.flatMap((reservation) => reservation.seatNumbers))];
+        const latestExpiry = new Date(
+            Math.max(...activeReservations.map((reservation) => new Date(reservation.expiresAt as Date).getTime()))
+        );
+
+        return res.json({ seatNumbers, expiresAt: latestExpiry });
+    } catch {
+        return res
+            .status(500)
+            .json({ message: "Unable to fetch your active reservation right now. Please try again." });
     }
 });
 
