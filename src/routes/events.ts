@@ -1,4 +1,5 @@
 import { Router } from "express";
+import mongoose from "mongoose";
 import { Event, Reservation, Seat } from "../models/Event";
 
 const router = Router();
@@ -49,33 +50,45 @@ const ensureSeatsExist = async (eventId: string, totalSeats: number) => {
 };
 
 router.get("/", async (_, res) => {
-    const events = await Event.find();
-    res.json(events);
+    try {
+        const events = await Event.find();
+        res.json(events);
+    } catch {
+        res.status(500).json({ message: "Unable to fetch events right now. Please try again." });
+    }
 });
 
 router.get("/:id", async (req, res) => {
-    const event = await Event.findById(req.params.id);
-    if (!event) return res.status(404).json({ message: "Not found" });
-
-    const eventId = req.params.id;
-    const existingCount = await Seat.countDocuments({ eventId });
-    const normalizedTotalSeats =
-        typeof event.totalSeats === "number" && event.totalSeats > 0
-            ? event.totalSeats
-            : existingCount > 0
-              ? existingCount
-              : 40;
-
-    if (!event.totalSeats || event.totalSeats <= 0) {
-        event.totalSeats = normalizedTotalSeats;
-        await event.save();
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+        return res.status(400).json({ message: "Invalid event id." });
     }
 
-    await ensureSeatsExist(eventId, normalizedTotalSeats);
-    await releaseExpiredReservations(eventId);
+    try {
+        const event = await Event.findById(req.params.id);
+        if (!event) return res.status(404).json({ message: "Event not found." });
 
-    const seats = await Seat.find({ eventId }).sort({ seatNumber: 1 });
-    res.json({ ...event.toObject(), seats });
+        const eventId = req.params.id;
+        const existingCount = await Seat.countDocuments({ eventId });
+        const normalizedTotalSeats =
+            typeof event.totalSeats === "number" && event.totalSeats > 0
+                ? event.totalSeats
+                : existingCount > 0
+                  ? existingCount
+                  : 40;
+
+        if (!event.totalSeats || event.totalSeats <= 0) {
+            event.totalSeats = normalizedTotalSeats;
+            await event.save();
+        }
+
+        await ensureSeatsExist(eventId, normalizedTotalSeats);
+        await releaseExpiredReservations(eventId);
+
+        const seats = await Seat.find({ eventId }).sort({ seatNumber: 1 });
+        res.json({ ...event.toObject(), seats });
+    } catch {
+        res.status(500).json({ message: "Unable to fetch event details right now. Please try again." });
+    }
 });
 
 export default router;

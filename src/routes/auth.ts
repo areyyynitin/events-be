@@ -5,10 +5,23 @@ import { signupSchema, signinSchema } from "../schemas";
 import { User } from "../models/Event";
 
 const router = Router();
+const formatValidationError = (error: any) => {
+    const issues = error?.issues;
+    if (Array.isArray(issues) && issues.length > 0) {
+        return issues
+            .map((issue: any) => `${issue.path?.join(".") || "field"}: ${issue.message}`)
+            .join(", ");
+    }
+    return "Please check the submitted fields.";
+};
 
 router.post("/signup", async (req, res) => {
     const parsed = signupSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json(parsed.error);
+    if (!parsed.success) {
+        return res.status(400).json({
+            message: `${formatValidationError(parsed.error)}`,
+        });
+    }
 
     const { email, password } = parsed.data;
 
@@ -32,14 +45,18 @@ router.post("/signup", async (req, res) => {
         );
 
         res.json({ token });
-    } catch (err: any) {
-        res.status(500).json({ message: err.message });
+    } catch {
+        res.status(500).json({ message: "Unable to complete signup right now. Please try again." });
     }
 });
 
 router.post("/signin", async (req, res) => {
     const parsed = signinSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json(parsed.error);
+    if (!parsed.success) {
+        return res.status(400).json({
+            message: ` ${formatValidationError(parsed.error)}`,
+        });
+    }
 
     const { email, password } = parsed.data;
 
@@ -65,8 +82,8 @@ router.post("/signin", async (req, res) => {
         );
 
         res.json({ token });
-    } catch (err: any) {
-        res.status(500).json({ message: err.message });
+    } catch {
+        res.status(500).json({ message: "Unable to login right now. Please try again." });
     }
 });
 

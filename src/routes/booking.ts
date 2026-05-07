@@ -38,6 +38,38 @@ const releaseExpiredReservations = async (eventId: string, session?: mongoose.Cl
     await deleteQuery;
 };
 
+const releaseUserReservations = async (
+    eventId: string,
+    userId: string,
+    session?: mongoose.ClientSession
+) => {
+    const userReservationsQuery = Reservation.find({ eventId, userId });
+    if (session) userReservationsQuery.session(session);
+    const userReservations = await userReservationsQuery;
+
+    if (userReservations.length === 0) return;
+
+    const reservedSeats = [...new Set(userReservations.flatMap((reservation) => reservation.seatNumbers))];
+    if (reservedSeats.length > 0) {
+        const seatUpdate = Seat.updateMany(
+            {
+                eventId,
+                seatNumber: { $in: reservedSeats },
+                status: "reserved",
+            },
+            { $set: { status: "available", reservedUntil: null } }
+        );
+        if (session) seatUpdate.session(session);
+        await seatUpdate;
+    }
+
+    const deleteQuery = Reservation.deleteMany({
+        _id: { $in: userReservations.map((reservation) => reservation._id) },
+    });
+    if (session) deleteQuery.session(session);
+    await deleteQuery;
+};
+
 router.post("/reserve", authMiddleware, async (req: AuthRequest, res) => {
     const parsed = reserveSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json(parsed.error);
@@ -50,6 +82,9 @@ router.post("/reserve", authMiddleware, async (req: AuthRequest, res) => {
 
     try {
         await releaseExpiredReservations(eventId, session);
+        // Keep only one active reservation state per user/event.
+        // If user reserves again after refresh, old blocked seats are released first.
+        await releaseUserReservations(eventId, userId, session);
 
         const seats = await Seat.find({
             eventId,
@@ -109,26 +144,26 @@ router.post("/bookings", authMiddleware, async (req: AuthRequest, res) => {
     try {
         await releaseExpiredReservations(eventId, session);
 
-        const reservation = await Reservation.findOne({
+        const reservations = await Reservation.find({
             userId,
             eventId,
         }).session(session);
 
-        if (!reservation) throw new Error("No reservation found");
+        if (reservations.length === 0) throw new Error("No reservation found");
 
-
-
-        if (!reservation.expiresAt) {
-            throw new Error("Reservation missing expiration");
-        }
-        if (reservation.expiresAt < new Date()) {
+        const now = new Date();
+        const activeReservations = reservations.filter(
+            (reservation) => reservation.expiresAt && reservation.expiresAt >= now
+        );
+        if (activeReservations.length === 0) {
             throw new Error("Reservation expired");
         }
 
+        const seatNumbers = [...new Set(activeReservations.flatMap((reservation) => reservation.seatNumbers))];
         await Seat.updateMany(
             {
                 eventId,
-                seatNumber: { $in: reservation.seatNumbers },
+                seatNumber: { $in: seatNumbers },
                 status: "reserved",
             },
             {
@@ -141,14 +176,16 @@ router.post("/bookings", authMiddleware, async (req: AuthRequest, res) => {
         );
         const updatedSeats = await Seat.countDocuments({
             eventId,
-            seatNumber: { $in: reservation.seatNumbers },
+            seatNumber: { $in: seatNumbers },
             status: "booked",
         }).session(session);
-        if (updatedSeats !== reservation.seatNumbers.length) {
+        if (updatedSeats !== seatNumbers.length) {
             throw new Error("Some seats are no longer reservable");
         }
 
-        await Reservation.deleteOne({ _id: reservation._id }).session(session);
+        await Reservation.deleteMany({
+            _id: { $in: activeReservations.map((reservation) => reservation._id) },
+        }).session(session);
 
         await session.commitTransaction();
 
